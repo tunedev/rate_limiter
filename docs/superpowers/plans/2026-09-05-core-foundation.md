@@ -1023,7 +1023,7 @@ generic observable and is asserted per-adapter instead."
 
 **Interfaces:**
 - Consumes: `port.Store`, `port.Request`, `port.Clock`, `storetest.RunConformance`, `domain.TokenBucketLimiter`, `domain.FixedWindowLimiter`.
-- Produces: `memory.Store` with `memory.New(clk port.Clock, opts ...Option) *Store`, `(*Store).Apply(ctx context.Context, req port.Request) (domain.Outcome, error)`, `(*Store).Close() error`, `(*Store).Len() int`; `memory.Option` with `memory.WithSweepInterval(d time.Duration) Option`.
+- Produces: `memory.Store` with `memory.New(clk port.Clock, opts ...Option) *Store`, `(*Store).Apply(ctx context.Context, req port.Request) (domain.Outcome, error)`, `(*Store).Close() error`, `(*Store).Len() int`, `(*Store).Sweep()`; `memory.Option` with `memory.WithSweepInterval(d time.Duration) Option`.
 
 Atomicity comes from one mutex per key, held across the read-transition-write. Generic transitions are erased into a per-algorithm function at construction: a failed type assertion on absent state yields the zero state, which is exactly clause 4. Entries expire one window past last use, and a sweeper reclaims them so idle keys do not accumulate.
 
