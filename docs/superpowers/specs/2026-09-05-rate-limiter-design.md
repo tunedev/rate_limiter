@@ -96,7 +96,10 @@ adapter; the port promises atomic application, never a single blob encoding —
 sliding window log is a sorted set, not a serialized struct.
 
 `Params` spans every algorithm's knobs, so `RuleSource` validates each rule's
-params against its algorithm at load, never on the request path.
+params against its algorithm at load, keeping parsing off the request path. A
+caller reaching `Service.Check` directly bypasses that, so `Check` validates too
+and returns the error rather than manufacturing a denial with no retry time.
+That check is a handful of integer comparisons, not a parse.
 
 ```go
 type RuleSource interface {
