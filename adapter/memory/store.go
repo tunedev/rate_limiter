@@ -66,8 +66,9 @@ type Store struct {
 	mu      sync.RWMutex
 	entries map[stateKey]*entry
 
-	stop chan struct{}
-	done sync.WaitGroup
+	stop     chan struct{}
+	stopOnce sync.Once
+	done     sync.WaitGroup
 }
 
 // New returns an empty Store reading time from clk.
@@ -204,9 +205,11 @@ func (s *Store) sweepLoop() {
 	}
 }
 
-// Close stops the background sweeper.
+// Close stops the background sweeper. It is safe to call more than once.
 func (s *Store) Close() error {
-	close(s.stop)
-	s.done.Wait()
+	s.stopOnce.Do(func() {
+		close(s.stop)
+		s.done.Wait()
+	})
 	return nil
 }

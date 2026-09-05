@@ -205,3 +205,14 @@ func TestStoreSweepDoesNotOverAdmit(t *testing.T) {
 		t.Fatalf("allowed = %d over %d rounds of one permit each, want %d", got, rounds, rounds)
 	}
 }
+
+func TestStoreCloseIsIdempotent(t *testing.T) {
+	s := New(clock.NewFake(time.Unix(1_700_000_000, 0)))
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
