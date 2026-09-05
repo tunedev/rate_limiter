@@ -6,8 +6,10 @@ import (
 	"github.com/tunedev/rate_limiter/domain"
 )
 
-// Request is one take against one key.
+// Request is one take against one key under one rule. RuleID and Key together
+// identify the state: one rule's limit on a subject is independent of another's.
 type Request struct {
+	RuleID    domain.RuleID
 	Key       domain.Key
 	Algorithm domain.Algorithm
 	Params    domain.Params
@@ -19,7 +21,8 @@ type Request struct {
 // The contract, asserted by storetest.RunConformance:
 //
 //  1. Apply is atomic per key. Concurrent calls on one key serialize.
-//  2. Apply is not atomic across keys. There are no multi-key transactions.
+//  2. Apply is not atomic across keys. There are no multi-key transactions, and
+//     each (RuleID, Key) pair holds its own state.
 //  3. The store owns the clock. Request carries no instant, and the returned
 //     Outcome's ResetAt and RetryAfter come from the store's own time.
 //  4. Missing state is full capacity, never an error.

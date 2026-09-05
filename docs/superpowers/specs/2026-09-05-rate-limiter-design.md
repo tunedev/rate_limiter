@@ -79,12 +79,16 @@ type Store interface {
 }
 
 type Request struct {
+    RuleID    RuleID
     Key       Key
     Algorithm Algorithm
     Params    Params
     Cost      int64
 }
 ```
+
+`RuleID` and `Key` together identify the state, matching the key layout below:
+one rule's limit on a subject never shares state with another's.
 
 `Store` dispatches on `Algorithm` to a per-algorithm handler, which persists the
 new state and returns the `Outcome`. State is per-algorithm and never leaves the

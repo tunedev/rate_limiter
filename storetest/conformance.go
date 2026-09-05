@@ -26,7 +26,12 @@ type Harness struct {
 const window = time.Second
 
 func req(key domain.Key) port.Request {
+	return ruleReq("rule-a", key)
+}
+
+func ruleReq(rule domain.RuleID, key domain.Key) port.Request {
 	return port.Request{
+		RuleID:    rule,
 		Key:       key,
 		Algorithm: domain.FixedWindow,
 		Params:    domain.Params{Limit: 100, Window: window},
@@ -104,6 +109,14 @@ func clauseKeysIndependent(t *testing.T, newHarness func(t *testing.T) Harness) 
 	}
 	if !out.Allowed {
 		t.Fatal("key b denied, want allowed: exhausting one key must not affect another")
+	}
+
+	out, err = h.Store.Apply(ctx, ruleReq("rule-b", "a"))
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !out.Allowed {
+		t.Fatal("key a under rule-b denied, want allowed: two rules over one subject hold separate state")
 	}
 }
 

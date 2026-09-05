@@ -50,6 +50,7 @@ func (s *Service) Check(ctx context.Context, req CheckRequest) (domain.Decision,
 
 	storeCtx, endStore := s.obs.BeginStore(ctx, req.Algorithm)
 	out, err := s.store.Apply(storeCtx, port.Request{
+		RuleID:    req.RuleID,
 		Key:       req.Key,
 		Algorithm: req.Algorithm,
 		Params:    req.Params,

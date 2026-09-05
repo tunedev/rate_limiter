@@ -23,6 +23,13 @@ func erase[S any](l domain.Limiter[S]) transition {
 	}
 }
 
+// stateKey is the identity of one piece of state: one rule's limit on one
+// subject, matching the Redis key layout.
+type stateKey struct {
+	rule domain.RuleID
+	key  domain.Key
+}
+
 type entry struct {
 	mu      sync.Mutex
 	state   any
@@ -45,7 +52,7 @@ type Store struct {
 	sweepEvery  time.Duration
 
 	mu      sync.RWMutex
-	entries map[domain.Key]*entry
+	entries map[stateKey]*entry
 
 	stop chan struct{}
 	done sync.WaitGroup
@@ -60,7 +67,7 @@ func New(clk port.Clock, opts ...Option) *Store {
 			domain.FixedWindow: erase[domain.FixedWindowState](domain.FixedWindowLimiter{}),
 		},
 		sweepEvery: time.Minute,
-		entries:    make(map[domain.Key]*entry),
+		entries:    make(map[stateKey]*entry),
 		stop:       make(chan struct{}),
 	}
 	for _, o := range opts {
@@ -73,7 +80,7 @@ func New(clk port.Clock, opts ...Option) *Store {
 	return s
 }
 
-// Apply runs req's transition atomically for req.Key.
+// Apply runs req's transition atomically for req's rule and key.
 func (s *Store) Apply(ctx context.Context, req port.Request) (domain.Outcome, error) {
 	if err := ctx.Err(); err != nil {
 		return domain.Outcome{}, err
@@ -84,7 +91,7 @@ func (s *Store) Apply(ctx context.Context, req port.Request) (domain.Outcome, er
 		return domain.Outcome{}, fmt.Errorf("memory: unsupported algorithm %q", req.Algorithm)
 	}
 
-	e := s.entryFor(req.Key)
+	e := s.entryFor(stateKey{rule: req.RuleID, key: req.Key})
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -100,7 +107,7 @@ func (s *Store) Apply(ctx context.Context, req port.Request) (domain.Outcome, er
 	return out, nil
 }
 
-func (s *Store) entryFor(k domain.Key) *entry {
+func (s *Store) entryFor(k stateKey) *entry {
 	s.mu.RLock()
 	e, ok := s.entries[k]
 	s.mu.RUnlock()
@@ -118,7 +125,7 @@ func (s *Store) entryFor(k domain.Key) *entry {
 	return e
 }
 
-// Len reports how many keys hold state.
+// Len reports how many rule and key pairs hold state.
 func (s *Store) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
