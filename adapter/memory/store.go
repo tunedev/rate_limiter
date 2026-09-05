@@ -5,6 +5,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -39,7 +40,10 @@ type algorithm struct {
 }
 
 type entry struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// dead marks an entry Sweep has removed from the map. A holder must look
+	// the key up again rather than write state no reader can reach.
+	dead    bool
 	state   any
 	expires time.Time
 }
@@ -105,20 +109,27 @@ func (s *Store) Apply(ctx context.Context, req port.Request) (domain.Outcome, er
 		return domain.Outcome{}, fmt.Errorf("memory: unsupported algorithm %q", req.Algorithm)
 	}
 
-	e := s.entryFor(stateKey{rule: req.RuleID, key: req.Key})
+	k := stateKey{rule: req.RuleID, key: req.Key}
+	for {
+		e := s.entryFor(k)
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
+		e.mu.Lock()
+		if e.dead {
+			e.mu.Unlock()
+			continue
+		}
 
-	now := s.clk.Now()
-	if now.After(e.expires) {
-		e.state = nil
+		now := s.clk.Now()
+		if now.After(e.expires) {
+			e.state = nil
+		}
+
+		state, out := a.apply(e.state, now, req.Params, req.Cost)
+		e.state = state
+		e.expires = now.Add(a.lifetime(req.Params))
+		e.mu.Unlock()
+		return out, nil
 	}
-
-	state, out := a.apply(e.state, now, req.Params, req.Cost)
-	e.state = state
-	e.expires = now.Add(a.lifetime(req.Params))
-	return out, nil
 }
 
 func (s *Store) entryFor(k stateKey) *entry {
@@ -146,19 +157,36 @@ func (s *Store) Len() int {
 	return len(s.entries)
 }
 
-// Sweep reclaims entries whose state has expired.
+// Sweep reclaims entries whose state has expired. It works from a snapshot, so
+// a pass never holds the store lock while Apply waits for it.
 func (s *Store) Sweep() {
 	now := s.clk.Now()
 
+	for k, e := range s.snapshot() {
+		if !e.mu.TryLock() {
+			continue
+		}
+		if now.After(e.expires) {
+			e.dead = true
+			s.remove(k, e)
+		}
+		e.mu.Unlock()
+	}
+}
+
+func (s *Store) snapshot() map[stateKey]*entry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return maps.Clone(s.entries)
+}
+
+// remove drops k while it still maps to e, which an Apply that created a
+// replacement may already have changed.
+func (s *Store) remove(k stateKey, e *entry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for k, e := range s.entries {
-		if e.mu.TryLock() {
-			if now.After(e.expires) {
-				delete(s.entries, k)
-			}
-			e.mu.Unlock()
-		}
+	if s.entries[k] == e {
+		delete(s.entries, k)
 	}
 }
 

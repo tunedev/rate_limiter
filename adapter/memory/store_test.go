@@ -2,6 +2,8 @@ package memory
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -143,5 +145,63 @@ func drain(t *testing.T, s *Store, req port.Request) int64 {
 		if allowed > req.Params.Limit+req.Params.Burst {
 			t.Fatalf("allowed %d permits from a bucket holding %d", allowed, req.Params.Limit+req.Params.Burst)
 		}
+	}
+}
+
+// TestStoreSweepDoesNotOverAdmit hammers Apply against Sweep on a key that has
+// just expired. An entry deleted between the lookup and the lock takes a permit
+// nobody counts, so another caller takes the same permit from a fresh entry.
+func TestStoreSweepDoesNotOverAdmit(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_700_000_000, 0))
+	s := New(clk, WithSweepInterval(0))
+	t.Cleanup(func() { _ = s.Close() })
+
+	req := port.Request{
+		RuleID:    "one-per-window",
+		Key:       "subject",
+		Algorithm: domain.FixedWindow,
+		Params:    domain.Params{Limit: 1, Window: time.Second},
+		Cost:      1,
+	}
+
+	const rounds, callers = 300, 8
+	var allowed atomic.Int64
+
+	for range rounds {
+		clk.Advance(3 * time.Second) // past the window and past the entry's lifetime
+
+		sweeping := make(chan struct{})
+		go func() {
+			for {
+				select {
+				case <-sweeping:
+					return
+				default:
+					s.Sweep()
+				}
+			}
+		}()
+
+		var wg sync.WaitGroup
+		for range callers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				out, err := s.Apply(context.Background(), req)
+				if err != nil {
+					t.Errorf("Apply: %v", err)
+					return
+				}
+				if out.Allowed {
+					allowed.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+		close(sweeping)
+	}
+
+	if got := allowed.Load(); got != rounds {
+		t.Fatalf("allowed = %d over %d rounds of one permit each, want %d", got, rounds, rounds)
 	}
 }
