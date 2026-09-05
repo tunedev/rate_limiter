@@ -12,10 +12,11 @@ import (
 )
 
 func TestStoreConformance(t *testing.T) {
-	storetest.RunConformance(t, func(t *testing.T, clk port.Clock) port.Store {
+	storetest.RunConformance(t, func(t *testing.T) storetest.Harness {
+		clk := clock.NewFake(time.Unix(1_700_000_000, 0))
 		s := New(clk)
 		t.Cleanup(func() { _ = s.Close() })
-		return s
+		return storetest.Harness{Store: s, Now: clk.Now, Advance: clk.Advance}
 	})
 }
 
