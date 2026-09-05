@@ -135,8 +135,11 @@ Every adapter passes one shared conformance suite asserting these clauses.
    round trip: `redis/lua` calls `TIME` inside the script, `redis/cas` pipelines
    it with the read it already makes. The residual risk is a failover to a
    replica whose clock disagrees, which the transition clamp bounds.
-4. **Missing state is full capacity.** Every key carries a TTL of window plus
-   slack. Expiry is the normal path, not an error path.
+4. **Missing state is full capacity.** Every key carries a TTL derived from the
+   algorithm and its params: long enough that expiry can never hand back more
+   capacity than the rule has actually accrued, which for a bucket with a burst
+   reserve is the time to refill from empty rather than one window. Expiry is
+   the normal path, not an error path.
 5. **Errors carry no policy.** `Apply` returns an error and nothing else. Fail-open
    versus fail-closed is `Rule.OnError`, resolved in the domain. An adapter never
    decides to allow traffic. `Apply` honours context cancellation, returning

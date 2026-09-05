@@ -13,6 +13,14 @@ type TokenBucketState struct {
 // burst of up to Limit plus Burst permits held in reserve.
 type TokenBucketLimiter struct{}
 
+// Lifetime reports how long a bucket's state must outlive its last use: long
+// enough to refill from empty, plus a window of slack. Expiring sooner would
+// hand back capacity the rule has not accrued.
+func (TokenBucketLimiter) Lifetime(p Params) time.Duration {
+	refill := p.Window + time.Duration(p.Burst)*p.Rate()
+	return refill + p.Window
+}
+
 // Apply accrues tokens for the clamped elapsed time, then takes cost of them.
 func (TokenBucketLimiter) Apply(s TokenBucketState, now time.Time, p Params, cost int64) (TokenBucketState, Outcome) {
 	capacity := p.Limit + p.Burst

@@ -112,3 +112,17 @@ func TestTokenBucketForwardJumpGrantsAtMostOneWindow(t *testing.T) {
 		t.Fatalf("Tokens = %d, want 10 (capacity), not unbounded", s.Tokens)
 	}
 }
+
+// TestTokenBucketLifetimeCoversRefill pins the property the store relies on:
+// state that survives its lifetime can never be refilled, so expiry hands back
+// no more capacity than the bucket would have accrued anyway.
+func TestTokenBucketLifetimeCoversRefill(t *testing.T) {
+	p := Params{Limit: 10, Window: time.Second, Burst: 90}
+	capacity := p.Limit + p.Burst
+
+	got := TokenBucketLimiter{}.Lifetime(p)
+	want := time.Duration(capacity) * p.Rate()
+	if got < want {
+		t.Fatalf("Lifetime = %v, want at least %v, the time to refill %d permits", got, want, capacity)
+	}
+}

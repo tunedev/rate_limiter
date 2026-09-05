@@ -25,7 +25,8 @@ type Request struct {
 //     each (RuleID, Key) pair holds its own state.
 //  3. The store owns the clock. Request carries no instant, and the returned
 //     Outcome's ResetAt and RetryAfter come from the store's own time.
-//  4. Missing state is full capacity, never an error.
+//  4. Missing state is full capacity, never an error. State is kept long enough
+//     that expiry cannot return more capacity than the rule has accrued.
 //  5. Errors carry no policy. A non-nil error returns a zero Outcome; whether
 //     that allows or denies is the caller's rule to decide. Apply honours
 //     context cancellation and returns ctx.Err() without applying anything.

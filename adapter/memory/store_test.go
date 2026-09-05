@@ -93,3 +93,55 @@ func TestStoreSweepsExpiredEntries(t *testing.T) {
 		t.Fatalf("Len = %d after sweeping an expired entry, want 0", s.Len())
 	}
 }
+
+// TestStoreKeepsBurstStateUntilItCouldRefill drains a bucket whose capacity is
+// ten windows of refill and idles well past the window. Expiring on the window
+// alone would return a full bucket and admit ten times the rule's rate.
+func TestStoreKeepsBurstStateUntilItCouldRefill(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_700_000_000, 0))
+	s := New(clk, WithSweepInterval(0))
+	t.Cleanup(func() { _ = s.Close() })
+
+	req := port.Request{
+		RuleID:    "burst",
+		Key:       "subject",
+		Algorithm: domain.TokenBucket,
+		Params:    domain.Params{Limit: 10, Window: time.Second, Burst: 90},
+		Cost:      1,
+	}
+
+	if drain(t, s, req) != 100 {
+		t.Fatal("a fresh bucket did not hold its full 100 permits")
+	}
+
+	idle := 3 * time.Second
+	clk.Advance(idle)
+	s.Sweep()
+	if s.Len() != 1 {
+		t.Fatalf("Len = %d after idling %v, want the drained bucket kept", s.Len(), idle)
+	}
+
+	accrued := drain(t, s, req)
+	if want := int64(idle/req.Params.Rate()) + 1; accrued > want {
+		t.Fatalf("allowed = %d after idling %v on a drained bucket, want at most %d accrued", accrued, idle, want)
+	}
+}
+
+// drain takes permits until one is denied and reports how many were allowed.
+func drain(t *testing.T, s *Store, req port.Request) int64 {
+	t.Helper()
+	var allowed int64
+	for {
+		out, err := s.Apply(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+		if !out.Allowed {
+			return allowed
+		}
+		allowed++
+		if allowed > req.Params.Limit+req.Params.Burst {
+			t.Fatalf("allowed %d permits from a bucket holding %d", allowed, req.Params.Limit+req.Params.Burst)
+		}
+	}
+}

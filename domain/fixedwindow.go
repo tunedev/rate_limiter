@@ -13,6 +13,10 @@ type FixedWindowState struct {
 // aligned to absolute time so every node agrees on the boundaries.
 type FixedWindowLimiter struct{}
 
+// Lifetime reports how long a window's count must outlive its last use: its
+// own window plus slack, after which the count applies to no live window.
+func (FixedWindowLimiter) Lifetime(p Params) time.Duration { return 2 * p.Window }
+
 // Apply resets the count when now falls outside the stored window, then takes
 // cost from it.
 func (FixedWindowLimiter) Apply(s FixedWindowState, now time.Time, p Params, cost int64) (FixedWindowState, Outcome) {

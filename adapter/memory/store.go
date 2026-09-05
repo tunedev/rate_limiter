@@ -30,6 +30,14 @@ type stateKey struct {
 	key  domain.Key
 }
 
+// algorithm is a transition plus how long the state it writes must outlive its
+// last use. The lifetime comes from the algorithm, since only it knows how much
+// capacity a given elapsed time accrues.
+type algorithm struct {
+	apply    transition
+	lifetime func(domain.Params) time.Duration
+}
+
 type entry struct {
 	mu      sync.Mutex
 	state   any
@@ -47,9 +55,9 @@ func WithSweepInterval(d time.Duration) Option {
 
 // Store applies transitions under one mutex per key.
 type Store struct {
-	clk         port.Clock
-	transitions map[domain.Algorithm]transition
-	sweepEvery  time.Duration
+	clk        port.Clock
+	algorithms map[domain.Algorithm]algorithm
+	sweepEvery time.Duration
 
 	mu      sync.RWMutex
 	entries map[stateKey]*entry
@@ -62,9 +70,15 @@ type Store struct {
 func New(clk port.Clock, opts ...Option) *Store {
 	s := &Store{
 		clk: clk,
-		transitions: map[domain.Algorithm]transition{
-			domain.TokenBucket: erase[domain.TokenBucketState](domain.TokenBucketLimiter{}),
-			domain.FixedWindow: erase[domain.FixedWindowState](domain.FixedWindowLimiter{}),
+		algorithms: map[domain.Algorithm]algorithm{
+			domain.TokenBucket: {
+				apply:    erase[domain.TokenBucketState](domain.TokenBucketLimiter{}),
+				lifetime: domain.TokenBucketLimiter{}.Lifetime,
+			},
+			domain.FixedWindow: {
+				apply:    erase[domain.FixedWindowState](domain.FixedWindowLimiter{}),
+				lifetime: domain.FixedWindowLimiter{}.Lifetime,
+			},
 		},
 		sweepEvery: time.Minute,
 		entries:    make(map[stateKey]*entry),
@@ -86,7 +100,7 @@ func (s *Store) Apply(ctx context.Context, req port.Request) (domain.Outcome, er
 		return domain.Outcome{}, err
 	}
 
-	apply, ok := s.transitions[req.Algorithm]
+	a, ok := s.algorithms[req.Algorithm]
 	if !ok {
 		return domain.Outcome{}, fmt.Errorf("memory: unsupported algorithm %q", req.Algorithm)
 	}
@@ -101,9 +115,9 @@ func (s *Store) Apply(ctx context.Context, req port.Request) (domain.Outcome, er
 		e.state = nil
 	}
 
-	state, out := apply(e.state, now, req.Params, req.Cost)
+	state, out := a.apply(e.state, now, req.Params, req.Cost)
 	e.state = state
-	e.expires = now.Add(2 * req.Params.Window)
+	e.expires = now.Add(a.lifetime(req.Params))
 	return out, nil
 }
 
