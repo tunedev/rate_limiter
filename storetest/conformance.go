@@ -22,19 +22,33 @@ type Harness struct {
 	Advance func(d time.Duration) // moves the store's clock forward
 }
 
-// window is the window every conformance request uses.
+// window is the short window clauseStoreOwnsClock needs cheap boundaries for.
 const window = time.Second
 
-func req(key domain.Key) port.Request {
-	return ruleReq("rule-a", key)
+// counting is the params for clauses that only count admitted permits rather
+// than test window boundaries. The window is long enough that a real clock's
+// round trips never accrue a permit or cross a boundary while a clause runs.
+var counting = domain.Params{Limit: 100, Window: time.Hour}
+
+// algorithms is what RunConformance drives when a caller names none.
+var algorithms = []domain.Algorithm{
+	domain.TokenBucket,
+	domain.LeakyBucket,
+	domain.FixedWindow,
+	domain.SlidingWindowLog,
+	domain.SlidingWindowCounter,
 }
 
-func ruleReq(rule domain.RuleID, key domain.Key) port.Request {
+func req(algo domain.Algorithm, key domain.Key, p domain.Params) port.Request {
+	return ruleReq(algo, "rule-a", key, p)
+}
+
+func ruleReq(algo domain.Algorithm, rule domain.RuleID, key domain.Key, p domain.Params) port.Request {
 	return port.Request{
 		RuleID:    rule,
 		Key:       key,
-		Algorithm: domain.FixedWindow,
-		Params:    domain.Params{Limit: 100, Window: window},
+		Algorithm: algo,
+		Params:    p,
 		Cost:      1,
 	}
 }
@@ -42,19 +56,42 @@ func ruleReq(rule domain.RuleID, key domain.Key) port.Request {
 // boundary returns the end of the fixed window containing t.
 func boundary(t time.Time) time.Time { return t.Truncate(window).Add(window) }
 
-// RunConformance asserts the port.Store contract against newHarness.
-func RunConformance(t *testing.T, newHarness func(t *testing.T) Harness) {
+// RunConformance asserts the port.Store contract against newHarness, for each
+// algorithm the adapter claims to support. Naming none means all five.
+//
+// Clauses 1, 2 and 4 hold whatever the algorithm, and run for each. Clause 4's
+// second statement, that expiry cannot return more capacity than idle time has
+// accrued, only has an observable effect where Burst raises capacity above the
+// window's own limit, so it runs for token_bucket and leaky_bucket alone.
+// Clause 3 asserts a fixed window's boundary, which is the tightest statement
+// of "the store owns the clock" available, and clause 5 concerns errors rather
+// than arithmetic; both run once.
+func RunConformance(t *testing.T, newHarness func(t *testing.T) Harness, algos ...domain.Algorithm) {
 	t.Helper()
-	t.Run("clause 1: atomic per key", func(t *testing.T) { clauseAtomicPerKey(t, newHarness) })
-	t.Run("clause 2: keys are independent", func(t *testing.T) { clauseKeysIndependent(t, newHarness) })
+	if len(algos) == 0 {
+		algos = algorithms
+	}
+
+	for _, algo := range algos {
+		t.Run(string(algo), func(t *testing.T) {
+			t.Run("clause 1: atomic per key", func(t *testing.T) { clauseAtomicPerKey(t, newHarness, algo) })
+			t.Run("clause 2: keys are independent", func(t *testing.T) { clauseKeysIndependent(t, newHarness, algo) })
+			t.Run("clause 4: missing state is full capacity", func(t *testing.T) { clauseMissingStateIsFull(t, newHarness, algo) })
+			if algo == domain.TokenBucket || algo == domain.LeakyBucket {
+				t.Run("clause 4: state outlives what it could refill", func(t *testing.T) {
+					clauseStateOutlivesRefill(t, newHarness, algo)
+				})
+			}
+		})
+	}
+
 	t.Run("clause 3: store owns the clock", func(t *testing.T) { clauseStoreOwnsClock(t, newHarness) })
-	t.Run("clause 4: missing state is full capacity", func(t *testing.T) { clauseMissingStateIsFull(t, newHarness) })
 	t.Run("clause 5: errors carry no policy", func(t *testing.T) { clauseErrorsCarryNoPolicy(t, newHarness) })
 }
 
 // clauseAtomicPerKey drives 400 concurrent takes at a limit of 100 and asserts
 // exactly 100 are allowed. A lost update shows up as more than 100.
-func clauseAtomicPerKey(t *testing.T, newHarness func(t *testing.T) Harness) {
+func clauseAtomicPerKey(t *testing.T, newHarness func(t *testing.T) Harness, algo domain.Algorithm) {
 	h := newHarness(t)
 	ctx := context.Background()
 
@@ -66,7 +103,7 @@ func clauseAtomicPerKey(t *testing.T, newHarness func(t *testing.T) Harness) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			out, err := h.Store.Apply(ctx, req("subject"))
+			out, err := h.Store.Apply(ctx, req(algo, "subject", counting))
 			if err != nil {
 				t.Errorf("Apply: %v", err)
 				return
@@ -85,17 +122,17 @@ func clauseAtomicPerKey(t *testing.T, newHarness func(t *testing.T) Harness) {
 	}
 }
 
-func clauseKeysIndependent(t *testing.T, newHarness func(t *testing.T) Harness) {
+func clauseKeysIndependent(t *testing.T, newHarness func(t *testing.T) Harness, algo domain.Algorithm) {
 	h := newHarness(t)
 	ctx := context.Background()
 
 	for range 100 {
-		if _, err := h.Store.Apply(ctx, req("a")); err != nil {
+		if _, err := h.Store.Apply(ctx, req(algo, "a", counting)); err != nil {
 			t.Fatalf("Apply: %v", err)
 		}
 	}
 
-	out, err := h.Store.Apply(ctx, req("a"))
+	out, err := h.Store.Apply(ctx, req(algo, "a", counting))
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -103,7 +140,7 @@ func clauseKeysIndependent(t *testing.T, newHarness func(t *testing.T) Harness) 
 		t.Fatal("key a still allowed after 100 takes, want denied")
 	}
 
-	out, err = h.Store.Apply(ctx, req("b"))
+	out, err = h.Store.Apply(ctx, req(algo, "b", counting))
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -111,7 +148,7 @@ func clauseKeysIndependent(t *testing.T, newHarness func(t *testing.T) Harness) 
 		t.Fatal("key b denied, want allowed: exhausting one key must not affect another")
 	}
 
-	out, err = h.Store.Apply(ctx, ruleReq("rule-b", "a"))
+	out, err = h.Store.Apply(ctx, ruleReq(algo, "rule-b", "a", counting))
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -127,8 +164,10 @@ func clauseStoreOwnsClock(t *testing.T, newHarness func(t *testing.T) Harness) {
 	h := newHarness(t)
 	ctx := context.Background()
 
+	shortWindow := domain.Params{Limit: 100, Window: window}
+
 	before := h.Now()
-	first, err := h.Store.Apply(ctx, req("subject"))
+	first, err := h.Store.Apply(ctx, req(domain.FixedWindow, "subject", shortWindow))
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -139,7 +178,7 @@ func clauseStoreOwnsClock(t *testing.T, newHarness func(t *testing.T) Harness) {
 	h.Advance(2 * window)
 
 	before = h.Now()
-	second, err := h.Store.Apply(ctx, req("subject"))
+	second, err := h.Store.Apply(ctx, req(domain.FixedWindow, "subject", shortWindow))
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -151,11 +190,11 @@ func clauseStoreOwnsClock(t *testing.T, newHarness func(t *testing.T) Harness) {
 	}
 }
 
-func clauseMissingStateIsFull(t *testing.T, newHarness func(t *testing.T) Harness) {
+func clauseMissingStateIsFull(t *testing.T, newHarness func(t *testing.T) Harness, algo domain.Algorithm) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	out, err := h.Store.Apply(ctx, req("never-seen"))
+	out, err := h.Store.Apply(ctx, req(algo, "never-seen", counting))
 	if err != nil {
 		t.Fatalf("Apply on an unknown key: %v", err)
 	}
@@ -167,6 +206,46 @@ func clauseMissingStateIsFull(t *testing.T, newHarness func(t *testing.T) Harnes
 	}
 }
 
+// clauseStateOutlivesRefill asserts clause 4's second statement: draining a
+// bucket then idling must not admit more than the idle time could refill.
+// Missing state answers full capacity, so an entry expiring before the rule
+// could have refilled it would hand back Burst permits for free.
+func clauseStateOutlivesRefill(t *testing.T, newHarness func(t *testing.T) Harness, algo domain.Algorithm) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	p := domain.Params{Limit: 10, Window: time.Second, Burst: 90}
+	r := ruleReq(algo, "rule-a", "subject", p)
+
+	drain := func() int64 {
+		var allowed int64
+		for {
+			out, err := h.Store.Apply(ctx, r)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if !out.Allowed {
+				return allowed
+			}
+			allowed++
+			if allowed > p.Limit+p.Burst {
+				t.Fatalf("allowed %d permits from a bucket holding %d", allowed, p.Limit+p.Burst)
+			}
+		}
+	}
+
+	if got, want := drain(), p.Limit+p.Burst; got != want {
+		t.Fatalf("drained %d permits from a fresh bucket, want %d", got, want)
+	}
+
+	idle := 3 * time.Second
+	h.Advance(idle)
+
+	if got, want := drain(), int64(idle/p.Rate())+1; got > want {
+		t.Fatalf("drained %d permits after idling %v, want at most %d accrued", got, idle, want)
+	}
+}
+
 // clauseErrorsCarryNoPolicy asserts a cancelled context yields an error and a
 // zero Outcome, never an Allowed one.
 func clauseErrorsCarryNoPolicy(t *testing.T, newHarness func(t *testing.T) Harness) {
@@ -175,7 +254,7 @@ func clauseErrorsCarryNoPolicy(t *testing.T, newHarness func(t *testing.T) Harne
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	out, err := h.Store.Apply(ctx, req("subject"))
+	out, err := h.Store.Apply(ctx, req(domain.FixedWindow, "subject", counting))
 	if err == nil {
 		t.Fatal("Apply with a cancelled context returned nil error, want an error")
 	}

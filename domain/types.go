@@ -90,4 +90,5 @@ type Decision struct {
 // zero value of S means full capacity.
 type Limiter[S any] interface {
 	Apply(s S, now time.Time, p Params, cost int64) (S, Outcome)
+	Lifetime(p Params) time.Duration
 }

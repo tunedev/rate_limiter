@@ -80,9 +80,21 @@ func New(clk port.Clock, opts ...Option) *Store {
 				apply:    erase[domain.TokenBucketState](domain.TokenBucketLimiter{}),
 				lifetime: domain.TokenBucketLimiter{}.Lifetime,
 			},
+			domain.LeakyBucket: {
+				apply:    erase[domain.LeakyBucketState](domain.LeakyBucketLimiter{}),
+				lifetime: domain.LeakyBucketLimiter{}.Lifetime,
+			},
 			domain.FixedWindow: {
 				apply:    erase[domain.FixedWindowState](domain.FixedWindowLimiter{}),
 				lifetime: domain.FixedWindowLimiter{}.Lifetime,
+			},
+			domain.SlidingWindowLog: {
+				apply:    erase[domain.SlidingWindowLogState](domain.SlidingWindowLogLimiter{}),
+				lifetime: domain.SlidingWindowLogLimiter{}.Lifetime,
+			},
+			domain.SlidingWindowCounter: {
+				apply:    erase[domain.SlidingWindowCounterState](domain.SlidingWindowCounterLimiter{}),
+				lifetime: domain.SlidingWindowCounterLimiter{}.Lifetime,
 			},
 		},
 		sweepEvery: time.Minute,
@@ -113,24 +125,34 @@ func (s *Store) Apply(ctx context.Context, req port.Request) (domain.Outcome, er
 	k := stateKey{rule: req.RuleID, key: req.Key}
 	for {
 		e := s.entryFor(k)
-
-		e.mu.Lock()
-		if e.dead {
-			e.mu.Unlock()
+		out, ok := e.apply(s.clk, a, req.Params, req.Cost)
+		if !ok {
 			continue
 		}
-
-		now := s.clk.Now()
-		if now.After(e.expires) {
-			e.state = nil
-		}
-
-		state, out := a.apply(e.state, now, req.Params, req.Cost)
-		e.state = state
-		e.expires = now.Add(a.lifetime(req.Params))
-		e.mu.Unlock()
 		return out, nil
 	}
+}
+
+// apply runs a's transition under e's lock and reports the outcome. ok is
+// false when e was already swept dead, in which case the caller must look the
+// key up again. The lock is released on every path, including a transition
+// that panics, so a panic never leaves the key permanently unusable.
+func (e *entry) apply(clk port.Clock, a algorithm, p domain.Params, cost int64) (out domain.Outcome, ok bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.dead {
+		return domain.Outcome{}, false
+	}
+
+	now := clk.Now()
+	if now.After(e.expires) {
+		e.state = nil
+	}
+
+	e.state, out = a.apply(e.state, now, p, cost)
+	e.expires = now.Add(a.lifetime(p))
+	return out, true
 }
 
 func (s *Store) entryFor(k stateKey) *entry {
