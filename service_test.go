@@ -74,8 +74,8 @@ func TestCheckReturnsZeroDecisionOnStoreError(t *testing.T) {
 	if !errors.Is(err, want) {
 		t.Fatalf("err = %v, want %v", err, want)
 	}
-	if d.Allowed {
-		t.Fatal("Allowed = true on a store error; the service must not decide policy")
+	if d != (domain.Decision{}) {
+		t.Fatalf("d = %+v, want zero Decision on a store error; the service must not decide policy", d)
 	}
 }
 
