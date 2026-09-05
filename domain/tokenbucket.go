@@ -41,12 +41,12 @@ func (TokenBucketLimiter) Apply(s TokenBucketState, now time.Time, p Params, cos
 		s.At = now
 	}
 
-	full := time.Duration(capacity-s.Tokens) * rate
 	if s.Tokens < cost {
+		untilFull := time.Duration(capacity-s.Tokens) * rate
 		return s, Outcome{
 			Remaining:  s.Tokens,
 			RetryAfter: time.Duration(cost-s.Tokens) * rate,
-			ResetAt:    now.Add(full),
+			ResetAt:    now.Add(untilFull),
 		}
 	}
 

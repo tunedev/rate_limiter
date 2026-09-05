@@ -2,7 +2,10 @@
 // transitions. It performs no I/O and reads no clock.
 package domain
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Algorithm names a rate limiting strategy. Stores dispatch on it to pick a
 // state representation and a transition.
@@ -40,6 +43,28 @@ func (p Params) Rate() time.Duration {
 		return 0
 	}
 	return time.Duration(int64(p.Window) / p.Limit)
+}
+
+// Validate reports whether p is usable for a. A rule source validates each rule
+// at load; a request that reaches a transition with unusable params would be
+// denied with nothing to retry after.
+func (p Params) Validate(a Algorithm) error {
+	switch a {
+	case TokenBucket, LeakyBucket, FixedWindow, SlidingWindowLog, SlidingWindowCounter:
+	default:
+		return fmt.Errorf("domain: unknown algorithm %q", a)
+	}
+	switch {
+	case p.Limit <= 0:
+		return fmt.Errorf("domain: Limit must be positive, got %d", p.Limit)
+	case p.Window <= 0:
+		return fmt.Errorf("domain: Window must be positive, got %v", p.Window)
+	case p.Rate() <= 0:
+		return fmt.Errorf("domain: Limit %d over Window %v leaves no time between permits", p.Limit, p.Window)
+	case p.Burst < 0:
+		return fmt.Errorf("domain: Burst must not be negative, got %d", p.Burst)
+	}
+	return nil
 }
 
 // Outcome is what a store can answer without knowing which rule asked.

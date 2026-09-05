@@ -99,3 +99,22 @@ func TestCheckReportsToObserver(t *testing.T) {
 		t.Fatalf("recorded %d store calls, want 1", obs.stores)
 	}
 }
+
+// TestCheckRejectsInvalidParams pins that a rule with no window is an error
+// rather than a denial with nothing to retry after, which an HTTP adapter would
+// map to a 429 with Retry-After 0.
+func TestCheckRejectsInvalidParams(t *testing.T) {
+	store := memory.New(clock.NewFake(time.Unix(1_700_000_000, 0)))
+	t.Cleanup(func() { _ = store.Close() })
+
+	req := checkReq()
+	req.Params = domain.Params{Limit: 10}
+
+	d, err := New(store).Check(context.Background(), req)
+	if err == nil {
+		t.Fatal("Check with no window returned nil error, want an error")
+	}
+	if d != (domain.Decision{}) {
+		t.Fatalf("d = %+v, want zero Decision on invalid params", d)
+	}
+}

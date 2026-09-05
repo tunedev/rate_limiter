@@ -43,10 +43,16 @@ func New(store port.Store, opts ...Option) *Service {
 	return s
 }
 
-// Check applies req and returns the decision. On a store error the Decision is
-// zero-valued: whether that allows or denies is the caller's policy.
+// Check validates req's params, applies it and returns the decision. On an
+// invalid rule or a store error the Decision is zero-valued and the error is
+// returned: whether that allows or denies is the caller's policy.
 func (s *Service) Check(ctx context.Context, req CheckRequest) (domain.Decision, error) {
 	ctx, endDecision := s.obs.BeginDecision(ctx, req.RuleID, req.Algorithm)
+
+	if err := req.Params.Validate(req.Algorithm); err != nil {
+		endDecision(domain.Decision{}, err)
+		return domain.Decision{}, err
+	}
 
 	storeCtx, endStore := s.obs.BeginStore(ctx, req.Algorithm)
 	out, err := s.store.Apply(storeCtx, port.Request{
