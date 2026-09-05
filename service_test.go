@@ -12,24 +12,37 @@ import (
 	"github.com/tunedev/rate_limiter/port"
 )
 
-type failingStore struct{ err error }
+// storeSpanKey marks the context BeginStore returns, so a store can report
+// whether it was handed that context rather than the caller's.
+type storeSpanKey struct{}
 
-func (f failingStore) Apply(context.Context, port.Request) (domain.Outcome, error) {
+type failingStore struct {
+	err             error
+	sawStoreContext bool
+}
+
+func (f *failingStore) Apply(ctx context.Context, _ port.Request) (domain.Outcome, error) {
+	f.sawStoreContext = ctx.Value(storeSpanKey{}) != nil
 	return domain.Outcome{}, f.err
 }
 
 type recordingObserver struct {
-	decisions []domain.Decision
-	stores    int
+	decisions    []domain.Decision
+	decisionErrs []error
+	storeErrs    []error
 }
 
 func (r *recordingObserver) BeginDecision(ctx context.Context, _ domain.RuleID, _ domain.Algorithm) (context.Context, port.EndDecision) {
-	return ctx, func(d domain.Decision, _ error) { r.decisions = append(r.decisions, d) }
+	return ctx, func(d domain.Decision, err error) {
+		r.decisions = append(r.decisions, d)
+		r.decisionErrs = append(r.decisionErrs, err)
+	}
 }
 
 func (r *recordingObserver) BeginStore(ctx context.Context, _ domain.Algorithm) (context.Context, port.EndStore) {
-	r.stores++
-	return ctx, func(error) {}
+	return context.WithValue(ctx, storeSpanKey{}, true), func(err error) {
+		r.storeErrs = append(r.storeErrs, err)
+	}
 }
 
 func (r *recordingObserver) RulesReloaded(context.Context, error) {}
@@ -70,7 +83,7 @@ func TestCheckStampsRuleAndLimit(t *testing.T) {
 func TestCheckReturnsZeroDecisionOnStoreError(t *testing.T) {
 	want := errors.New("store unreachable")
 
-	d, err := New(failingStore{err: want}).Check(context.Background(), checkReq())
+	d, err := New(&failingStore{err: want}).Check(context.Background(), checkReq())
 	if !errors.Is(err, want) {
 		t.Fatalf("err = %v, want %v", err, want)
 	}
@@ -95,8 +108,31 @@ func TestCheckReportsToObserver(t *testing.T) {
 	if obs.decisions[0].RuleID != "per-ip" {
 		t.Fatalf("recorded RuleID = %q, want per-ip", obs.decisions[0].RuleID)
 	}
-	if obs.stores != 1 {
-		t.Fatalf("recorded %d store calls, want 1", obs.stores)
+	if len(obs.storeErrs) != 1 || obs.storeErrs[0] != nil {
+		t.Fatalf("recorded store results %v, want exactly one nil", obs.storeErrs)
+	}
+}
+
+// TestCheckReportsStoreErrorToObserver pins the two things the store round trip
+// owes the observer: the error it failed with, and the context BeginStore
+// returned, without which a span cannot nest under the decision.
+func TestCheckReportsStoreErrorToObserver(t *testing.T) {
+	want := errors.New("store unreachable")
+	store := &failingStore{err: want}
+	obs := &recordingObserver{}
+
+	if _, err := New(store, WithObserver(obs)).Check(context.Background(), checkReq()); !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+
+	if len(obs.storeErrs) != 1 || !errors.Is(obs.storeErrs[0], want) {
+		t.Fatalf("recorded store results %v, want exactly [%v]", obs.storeErrs, want)
+	}
+	if len(obs.decisionErrs) != 1 || !errors.Is(obs.decisionErrs[0], want) {
+		t.Fatalf("recorded decision results %v, want exactly [%v]", obs.decisionErrs, want)
+	}
+	if !store.sawStoreContext {
+		t.Fatal("the store was called with the caller's context, want the one BeginStore returned")
 	}
 }
 
@@ -110,11 +146,18 @@ func TestCheckRejectsInvalidParams(t *testing.T) {
 	req := checkReq()
 	req.Params = domain.Params{Limit: 10}
 
-	d, err := New(store).Check(context.Background(), req)
+	obs := &recordingObserver{}
+	d, err := New(store, WithObserver(obs)).Check(context.Background(), req)
 	if err == nil {
 		t.Fatal("Check with no window returned nil error, want an error")
 	}
 	if d != (domain.Decision{}) {
 		t.Fatalf("d = %+v, want zero Decision on invalid params", d)
+	}
+	if len(obs.decisionErrs) != 1 || obs.decisionErrs[0] == nil {
+		t.Fatalf("recorded decision results %v, want exactly one error", obs.decisionErrs)
+	}
+	if len(obs.storeErrs) != 0 {
+		t.Fatalf("recorded %d store round trips, want none: invalid params never reach the store", len(obs.storeErrs))
 	}
 }
