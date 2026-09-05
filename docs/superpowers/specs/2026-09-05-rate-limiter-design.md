@@ -61,9 +61,11 @@ type Limiter[S any] interface {
 }
 ```
 
-No I/O, no clock reads. The zero `S` is full capacity (clause 4). Every
-transition clamps elapsed time to `[0, Params.Window]` before using it, so a
-clock that moves backward or jumps forward cannot corrupt bucket state.
+No I/O, no clock reads. The zero `S` is full capacity (clause 4). Transitions
+that accrue over elapsed time clamp it to `[0, Params.Window]`, so a clock that
+moves backward or jumps forward cannot corrupt bucket state. The window
+algorithms need no clamp: they derive boundaries by truncating absolute time,
+which bounds a jump by construction.
 
 `Outcome` is what a store can answer on its own. The domain composes it into a
 `Decision` by adding `Limit` from `Params` and stamping `RuleID` and `Group`,
