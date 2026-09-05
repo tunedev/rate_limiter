@@ -135,7 +135,8 @@ Every adapter passes one shared conformance suite asserting these clauses.
    slack. Expiry is the normal path, not an error path.
 5. **Errors carry no policy.** `Apply` returns an error and nothing else. Fail-open
    versus fail-closed is `Rule.OnError`, resolved in the domain. An adapter never
-   decides to allow traffic.
+   decides to allow traffic. `Apply` honours context cancellation, returning
+   `ctx.Err()` without applying anything.
 6. **Not idempotent.** A timed-out `Apply` may or may not have been applied.
    Callers do not blindly retry; the timeout routes through clause 5.
 
