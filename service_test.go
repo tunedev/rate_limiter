@@ -161,3 +161,26 @@ func TestCheckRejectsInvalidParams(t *testing.T) {
 		t.Fatalf("recorded %d store round trips, want none: invalid params never reach the store", len(obs.storeErrs))
 	}
 }
+
+// TestCheckRejectsNegativeCost pins that a negative Cost is an error rather
+// than a nonsensical result: sliding_window_log panics on a negative Cost, and
+// the other four algorithms would silently grant or deny the wrong thing.
+func TestCheckRejectsNegativeCost(t *testing.T) {
+	store := memory.New(clock.NewFake(time.Unix(1_700_000_000, 0)))
+	t.Cleanup(func() { _ = store.Close() })
+
+	req := checkReq()
+	req.Cost = -1
+
+	obs := &recordingObserver{}
+	d, err := New(store, WithObserver(obs)).Check(context.Background(), req)
+	if err == nil {
+		t.Fatal("Check with a negative Cost returned nil error, want an error")
+	}
+	if d != (domain.Decision{}) {
+		t.Fatalf("d = %+v, want zero Decision on a negative Cost", d)
+	}
+	if len(obs.storeErrs) != 0 {
+		t.Fatalf("recorded %d store round trips, want none: a negative Cost never reaches the store", len(obs.storeErrs))
+	}
+}

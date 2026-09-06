@@ -5,6 +5,7 @@ package ratelimit
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/tunedev/rate_limiter/adapter/observer/noop"
 	"github.com/tunedev/rate_limiter/domain"
@@ -50,6 +51,11 @@ func (s *Service) Check(ctx context.Context, req CheckRequest) (domain.Decision,
 	ctx, endDecision := s.obs.BeginDecision(ctx, req.RuleID, req.Algorithm)
 
 	if err := req.Params.Validate(req.Algorithm); err != nil {
+		endDecision(domain.Decision{}, err)
+		return domain.Decision{}, err
+	}
+	if req.Cost < 0 {
+		err := fmt.Errorf("ratelimit: Cost must not be negative, got %d", req.Cost)
 		endDecision(domain.Decision{}, err)
 		return domain.Decision{}, err
 	}

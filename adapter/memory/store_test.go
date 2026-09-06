@@ -22,37 +22,6 @@ func TestStoreConformance(t *testing.T) {
 	})
 }
 
-func TestStoreDispatchesOnAlgorithm(t *testing.T) {
-	clk := clock.NewFake(time.Unix(1_700_000_000, 0))
-	s := New(clk)
-	t.Cleanup(func() { _ = s.Close() })
-
-	req := port.Request{
-		Key:       "subject",
-		Algorithm: domain.TokenBucket,
-		Params:    domain.Params{Limit: 2, Window: time.Second},
-		Cost:      1,
-	}
-
-	for i := range 2 {
-		out, err := s.Apply(context.Background(), req)
-		if err != nil {
-			t.Fatalf("Apply: %v", err)
-		}
-		if !out.Allowed {
-			t.Fatalf("take %d denied, want allowed", i)
-		}
-	}
-
-	out, err := s.Apply(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-	if out.Allowed {
-		t.Fatal("take 3 allowed, want denied")
-	}
-}
-
 func TestStoreRejectsUnknownAlgorithm(t *testing.T) {
 	s := New(clock.NewFake(time.Unix(1_700_000_000, 0)))
 	t.Cleanup(func() { _ = s.Close() })
@@ -68,6 +37,51 @@ func TestStoreRejectsUnknownAlgorithm(t *testing.T) {
 	}
 	if out != (domain.Outcome{}) {
 		t.Fatalf("Outcome = %+v on error, want the zero value", out)
+	}
+}
+
+// TestStorePanicDoesNotWedgeKey registers a transition that panics and shows a
+// later Apply on the same key still completes. Apply releases the key's mutex
+// with defer, so a panicking transition leaves the key usable.
+func TestStorePanicDoesNotWedgeKey(t *testing.T) {
+	clk := clock.NewFake(time.Unix(1_700_000_000, 0))
+	s := New(clk, WithSweepInterval(0))
+	t.Cleanup(func() { _ = s.Close() })
+
+	const panicky = domain.Algorithm("panics")
+	s.algorithms[panicky] = algorithm{
+		apply: func(any, time.Time, domain.Params, int64) (any, domain.Outcome) {
+			panic("boom")
+		},
+		lifetime: func(domain.Params) time.Duration { return time.Second },
+	}
+
+	req := port.Request{
+		RuleID:    "rule",
+		Key:       "subject",
+		Algorithm: panicky,
+		Params:    domain.Params{Limit: 1, Window: time.Second},
+		Cost:      1,
+	}
+
+	func() {
+		defer func() { recover() }()
+		_, _ = s.Apply(context.Background(), req)
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		req.Algorithm = domain.FixedWindow
+		if _, err := s.Apply(context.Background(), req); err != nil {
+			t.Errorf("Apply after a panicking transition: %v", err)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Apply on the same key never returned: the panic wedged it")
 	}
 }
 
