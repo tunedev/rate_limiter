@@ -150,7 +150,7 @@ func TestSlidingWindowCounterLifetimeCoversThePreviousWindow(t *testing.T) {
 func TestSlidingWindowCounterHandlesLongWindowQuotas(t *testing.T) {
 	var l SlidingWindowCounterLimiter
 	p := Params{Limit: 10_000, Window: 30 * 24 * time.Hour}
-	base := time.Unix(1_700_000_000, 0).Truncate(p.Window)
+	base := truncateFromEpoch(time.Unix(1_700_000_000, 0), p.Window)
 
 	// A saturated window rolls into the next one, where it still weighs fully.
 	s := SlidingWindowCounterState{Start: base, Curr: p.Limit}

@@ -77,3 +77,57 @@ measurement, not a coincidence. sliding_window_log holds roughly ten times
 the state of every counter-based algorithm: it keeps one timestamp per
 admitted permit, where the others keep two integers, and that per-permit
 cost is exactly the accuracy trade the algorithm makes.
+
+## Redis adapters under a hot key
+
+One key, `token_bucket`, `Limit` high enough that no run saturates it. Every
+`RunParallel` goroutine contends on that one key, which is the traffic a rate
+limiter exists to handle and the case where the two atomicity strategies
+diverge: `redis/lua` commits in one round trip per decision; `redis/cas`
+retries its `WATCH` transaction whenever another goroutine's write lands
+first.
+
+`b.SetParallelism(n)` runs `n * GOMAXPROCS` goroutines, not `n` goroutines, so
+the row labels below name parallelism, not an absolute goroutine count.
+GOMAXPROCS on the measuring machine was 32, matching the `-32` suffix Go
+prints on each benchmark name.
+
+Redis ran on a unix socket on the same machine as the client, which is the
+cheapest possible path between them. That understates real network latency,
+and therefore understates the cost of `redis/cas`'s extra round trips: a
+client talking to Redis over a network should expect a wider gap than the one
+below, not a narrower one.
+
+    go test ./adapter/redis/ -bench=BenchmarkHotKey -benchmem -run '^$' -count=5
+
+| Adapter | Parallelism | ns/op (min) | ns/op (median) | ns/op (max) | retries/op (min) | retries/op (median) | retries/op (max) |
+|---|---|---|---|---|---|---|---|
+| redis/lua | 1 | 8643 | 8984 | 9282 | - | - | - |
+| redis/cas | 1 | 237282 | 257962 | 273284 | 18.24 | 18.34 | 18.38 |
+| redis/lua | 8 | 10644 | 11303 | 12561 | - | - | - |
+| redis/cas | 8 | 1113692 | 1299827 | 1391932 | 112.3 | 116.3 | 118.5 |
+| redis/lua | 64 | 9703 | 10340 | 11034 | - | - | - |
+| redis/cas | 64 | 1489840 | 1605595 | 1728580 | 143.6 | 149.1 | 153.4 |
+
+Machine: `go version go1.27.0 linux/amd64`, `13th Gen Intel(R) Core(TM) i9-13900HX`.
+
+`redis/lua`'s ns/op range sits under 13 microseconds at every parallelism
+level measured. `redis/cas`'s range sits at least an order of magnitude
+above it at every level, with no overlap: `redis/lua`'s worst sample (12561
+ns/op, at parallelism 8) is still below `redis/cas`'s best sample at any
+level (237282 ns/op, at parallelism 1). Comparing matched quantiles at each
+level (min against min, median against median, max against max), the gap
+widens as parallelism rises: roughly 27-29x at parallelism 1, roughly
+105-115x at parallelism 8, roughly 154-157x at parallelism 64. That
+widening tracks the retries/op column: under `WATCH`, exactly one contender's
+`EXEC` commits per round, so serialising more concurrent contenders on the
+same key costs more thrown-away attempts, and each attempt is a full round
+trip. `redis/lua` needs no such retry loop and reports no retries/op figure.
+
+`redis/lua`'s own ns/op range is lowest at parallelism 1 (8643-9282) and does
+not overlap either the parallelism-8 range (10644-12561) or the
+parallelism-64 range (9703-11034); those two higher-parallelism ranges
+overlap each other. The samples therefore separate parallelism 1 from the
+other two but do not support ranking parallelism 8 against parallelism 64.
+The median is not monotonic across all three points either (8984 at
+parallelism 1, 11303 at 8, 10340 at 64).
