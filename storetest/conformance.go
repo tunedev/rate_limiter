@@ -241,7 +241,25 @@ func clauseStateOutlivesRefill(t *testing.T, newHarness func(t *testing.T) Harne
 	idle := 3 * time.Second
 	h.Advance(idle)
 
-	if got, want := drain(), int64(idle/p.Rate())+1; got > want {
+	// One take accrues at most a window of elapsed time, so however long the
+	// store idled, the first take back cannot answer with more than a window's
+	// worth of permits. A store that accrued the whole idle period at once
+	// would answer with three windows' worth here.
+	first, err := h.Store.Apply(ctx, r)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !first.Allowed {
+		t.Fatalf("first take after idling %v denied, want allowed: the idle time accrued permits", idle)
+	}
+	if want := int64(min(idle, p.Window) / p.Rate()); first.Remaining > want {
+		t.Fatalf("Remaining = %d on the first take after idling %v, want at most %d: a single take accrues at most one window of %v", first.Remaining, idle, want, p.Window)
+	}
+
+	// Across takes the whole idle period accrues, a window at a time, and
+	// stops there: what the rule granted while idle and nothing the state's
+	// expiry handed back.
+	if got, want := drain()+1, int64(idle/p.Rate())+1; got > want {
 		t.Fatalf("drained %d permits after idling %v, want at most %d accrued", got, idle, want)
 	}
 }

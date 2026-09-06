@@ -218,9 +218,13 @@ rl:v1:{<ruleID>/<subject>}
   migration.
 - The hash tag wraps `ruleID/subject` so one rule's state for one subject is in
   one slot. Nothing else needs colocating, per clause 2.
+- Both components are percent-escaped before joining, so a `/` in a rule ID or a
+  subject cannot make two distinct pairs share a key.
 - One key per (rule, subject), typed to its algorithm: hash for token and leaky
-  bucket, counter for fixed window, sorted set for sliding window log, hash of two
-  counters for sliding window counter.
+  bucket, hash of a window start and a count for fixed window, sorted set for
+  sliding window log, hash of two counters for sliding window counter. Fixed
+  window holds its own start rather than inferring the boundary from the TTL,
+  which would make the window roll rather than sit on a fixed boundary.
 - No key is written without a TTL.
 
 ## Observability

@@ -24,7 +24,7 @@ func (FixedWindowLimiter) Apply(s FixedWindowState, now time.Time, p Params, cos
 		return s, Outcome{}
 	}
 
-	start := now.Truncate(p.Window)
+	start := truncateFromEpoch(now, p.Window)
 	if !s.Start.Equal(start) {
 		s = FixedWindowState{Start: start}
 	}

@@ -33,7 +33,7 @@ func (SlidingWindowCounterLimiter) Apply(s SlidingWindowCounterState, now time.T
 		return s, Outcome{}
 	}
 
-	start := now.Truncate(p.Window)
+	start := truncateFromEpoch(now, p.Window)
 	switch {
 	case s.Start.Equal(start):
 	case s.Start.Add(p.Window).Equal(start):
